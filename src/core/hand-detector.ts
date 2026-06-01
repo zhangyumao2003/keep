@@ -21,21 +21,20 @@ export interface DetectionResult {
 let handLandmarker: HandLandmarker | null = null
 let isInitialized = false
 
-// 国内可访问的CDN镜像列表
-const CDN_SOURCES = [
-  // jsDelivr 国内加速节点 (推荐)
+// 国内可访问的WASM源列表
+const WASM_SOURCES = [
   'https://fastly.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm',
-  // 备用：jsDelivr 主节点
   'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm',
+  'https://unpkg.com/@mediapipe/tasks-vision@0.10.8/wasm',
 ]
 
-// 模型文件URL
+// 模型文件URL - 使用国内代理或备用源
 const MODEL_URLS = [
-  // 优先使用本地
+  // 尝试本地文件
   '/keep/models/hand_landmarker.task',
-  // jsDelivr 国内加速
-  'https://fastly.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm/hand_landmarker.task',
-  // 备用：jsDelivr 主节点
+  // 使用 unpkg (国内访问较快)
+  'https://unpkg.com/@mediapipe/tasks-vision@0.10.8/wasm/hand_landmarker.task',
+  // jsDelivr 备用
   'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm/hand_landmarker.task',
 ]
 
@@ -45,7 +44,7 @@ export async function initHandDetector() {
     let lastError = null
 
     // 尝试多个WASM源
-    for (const wasmPath of CDN_SOURCES) {
+    for (const wasmPath of WASM_SOURCES) {
       try {
         console.log(`📥 尝试加载WASM: ${wasmPath}`)
         vision = await FilesetResolver.forVisionTasks(wasmPath)
@@ -53,38 +52,47 @@ export async function initHandDetector() {
         break
       } catch (error) {
         lastError = error
-        console.warn(`⚠️  WASM加载失败: ${wasmPath}`, error)
+        console.warn(`⚠️  WASM加载失败: ${wasmPath}`)
         continue
       }
     }
 
     if (!vision) {
-      throw new Error(`无法加载MediaPipe WASM文件。错误: ${lastError}`)
+      throw new Error(`无法加载MediaPipe WASM文件`)
     }
 
     // 尝试多个模型源
     let modelPath = null
+
     for (const url of MODEL_URLS) {
       try {
-        console.log(`📥 尝试加载模型: ${url}`)
-        // 测试URL可访问性
-        const response = await fetch(url, { method: 'HEAD', mode: 'no-cors' })
-        if (response.ok || response.status === 0) {
+        console.log(`📥 测试模型源: ${url}`)
+
+        const response = await fetch(url, {
+          method: 'HEAD',
+          mode: 'cors',
+        })
+
+        if (response.status === 200 || response.status === 0) {
           modelPath = url
-          console.log(`✅ 模型可访问: ${url}`)
+          console.log(`✅ 模型源可用: ${url}`)
           break
+        } else {
+          console.warn(`⚠️  模型源返回 ${response.status}: ${url}`)
         }
       } catch (error) {
-        console.warn(`⚠️  模型不可访问: ${url}`, error)
+        console.warn(`⚠️  模型源检测失败: ${url}`)
         continue
       }
     }
 
     if (!modelPath) {
-      // 降级处理：使用jsDelivr的主节点
+      // 使用最后一个备用源
       modelPath = MODEL_URLS[MODEL_URLS.length - 1]
       console.warn(`⚠️  使用备用模型源: ${modelPath}`)
     }
+
+    console.log(`🔧 正在初始化HandLandmarker，模型路径: ${modelPath}`)
 
     handLandmarker = await HandLandmarker.createFromOptions(vision, {
       baseOptions: {
