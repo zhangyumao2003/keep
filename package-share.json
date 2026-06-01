@@ -1,0 +1,9 @@
+{
+  "name": "iron-man-capture",
+  "version": "0.1.0",
+  "description": "Iron Man 3D Motion Capture System",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
