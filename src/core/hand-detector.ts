@@ -21,11 +21,12 @@ export interface DetectionResult {
 let handLandmarker: HandLandmarker | null = null
 let isInitialized = false
 
-// WASM文件源列表 - 本地优先，CDN备用（按国内可访问性排序）
+// WASM文件源列表 - /keep/ 优先（兼容GitHub Pages和本地），CDN备用
 const WASM_SOURCES = [
-  // 本地文件（最可靠，无需网络）
-  '/models/wasm',
+  // GitHub Pages 路径（本地 server.cjs 会自动剥离 /keep/ 前缀）
   '/keep/models/wasm',
+  // 本地路径（Vite dev / 其他服务器）
+  '/models/wasm',
   // jsDelivr Fastly CDN（国内速度较快）
   'https://fastly.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm',
   // jsDelivr 通用CDN
