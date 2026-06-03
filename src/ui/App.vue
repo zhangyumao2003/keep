@@ -33,6 +33,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
+import * as THREE from 'three'
 import { initHandDetector, detectHands, Hand } from '../core/hand-detector'
 import { recognizeGestures, Gesture } from '../core/gesture-recognizer'
 import { SceneManager } from '../rendering/scene-manager'
@@ -58,7 +59,7 @@ let frameCount = 0
 
 async function init() {
   try {
-    loadingMessage.value = '请求摄像头权限...'
+    loadingMessage.value = '步骤1/5: 加载AI手部检测模型...'
 
     if (!canvas.value) {
       throw new Error('Canvas not found')
@@ -66,22 +67,28 @@ async function init() {
 
     // Initialize hand detector
     await initHandDetector()
-    loadingMessage.value = '初始化3D场景...'
+    loadingMessage.value = '步骤2/5: 请求摄像头权限...'
 
     // Setup video
     videoElement = document.createElement('video')
     videoElement.setAttribute('autoplay', 'true')
     videoElement.setAttribute('playsinline', 'true')
+    videoElement.setAttribute('muted', 'true')
     videoElement.style.display = 'none'
+    document.body.appendChild(videoElement)
 
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'user' }
+      video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }
     })
     videoElement.srcObject = stream
+
+    loadingMessage.value = '步骤3/5: 初始化3D引擎...'
 
     // Initialize scene
     sceneManager = new SceneManager(canvas.value)
     gestureController = new GestureController(sceneManager.getCamera(), sceneManager.getScene())
+
+    loadingMessage.value = '步骤4/5: 加载特效插件...'
 
     // Initialize plugin system
     pluginManager = new PluginManager()
@@ -89,21 +96,42 @@ async function init() {
 
     // Add some demo objects
     const cube1 = sceneManager.createCube(0.2, 0x00ff9f)
-    sceneManager.addObject(cube1, { x: 0, y: 0, z: 0.5 } as any)
+    sceneManager.addObject(cube1, new THREE.Vector3(0, 0, 0.5))
 
     const cube2 = sceneManager.createCube(0.15, 0xff00ff)
-    sceneManager.addObject(cube2, { x: 0.3, y: 0.3, z: 0.5 } as any)
+    sceneManager.addObject(cube2, new THREE.Vector3(0.3, 0.3, 0.5))
 
-    loadingMessage.value = '启动主循环...'
+    loadingMessage.value = '步骤5/5: 启动摄像头采集...'
     initialized.value = true
 
-    await new Promise(resolve => setTimeout(resolve, 500))
-    videoElement.play()
+    // 等待视频元数据加载完成
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('视频加载超时')), 10000)
+      videoElement!.onloadedmetadata = () => {
+        clearTimeout(timeout)
+        resolve(undefined)
+      }
+      if (videoElement!.readyState >= 1) {
+        clearTimeout(timeout)
+        resolve(undefined)
+      }
+    })
 
+    // 播放视频（需要await因为浏览器可能阻止自动播放）
+    try {
+      await videoElement.play()
+      console.log('✅ 摄像头视频流已启动')
+    } catch (playError) {
+      console.warn('⚠️ 视频播放被浏览器限制:', playError)
+      // 某些浏览器需要用户交互才能播放，继续执行
+    }
+
+    console.log('🚀 启动主循环')
     animate()
   } catch (error) {
-    console.error('Initialization error:', error)
-    loadingMessage.value = `错误: ${(error as Error).message}`
+    const err = error as Error
+    console.error('❌ 初始化失败:', err.message, err.stack)
+    loadingMessage.value = `初始化失败\n步骤: ${loadingMessage.value}\n错误: ${err.message}\n\n请按F12打开控制台查看详情`
     detectionStatus.value = 'Error'
   }
 }
@@ -114,6 +142,13 @@ function animate() {
   if (!sceneManager || !gestureController || !videoElement || !pluginManager) return
 
   try {
+    // 确保视频已准备好
+    if (videoElement.readyState < 2) {
+      // 视频还没准备好，跳过这帧
+      sceneManager.render()
+      return
+    }
+
     // Detect hands
     const result = detectHands(videoElement)
     detectedHands.value = result.hands.length
@@ -157,6 +192,7 @@ function animate() {
     }
   } catch (error) {
     console.error('Animation error:', error)
+    detectionStatus.value = `Error: ${(error as Error).message}`
   }
 }
 
