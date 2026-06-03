@@ -21,18 +21,25 @@ export interface DetectionResult {
 let handLandmarker: HandLandmarker | null = null
 let isInitialized = false
 
-// 国内可访问的WASM源列表
+// WASM文件源列表 - 本地优先，CDN备用（按国内可访问性排序）
 const WASM_SOURCES = [
+  // 本地文件（最可靠，无需网络）
+  '/models/wasm',
+  '/keep/models/wasm',
+  // jsDelivr Fastly CDN（国内速度较快）
   'https://fastly.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm',
+  // jsDelivr 通用CDN
   'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm',
+  // unpkg CDN
   'https://unpkg.com/@mediapipe/tasks-vision@0.10.8/wasm',
 ]
 
-// 模型文件URL - 使用国内代理或备用源
+// 模型文件URL - 本地文件优先，CDN备用
 const MODEL_URLS = [
-  // 尝试本地文件
+  // 本地文件（部署时包含在构建中）
+  '/models/hand_landmarker.task',
   '/keep/models/hand_landmarker.task',
-  // 使用 unpkg (国内访问较快)
+  // unpkg CDN（国内访问相对较快）
   'https://unpkg.com/@mediapipe/tasks-vision@0.10.8/wasm/hand_landmarker.task',
   // jsDelivr 备用
   'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm/hand_landmarker.task',
