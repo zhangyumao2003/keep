@@ -25,6 +25,13 @@
       </div>
     </div>
 
+    <ModulePanel
+      :visible="panelVisible"
+      :modules="moduleStore.modules"
+      :hoveredModuleId="hoveredModuleId"
+      :selectedModuleId="selectedModuleId"
+    />
+
     <div v-if="!initialized" class="loading-screen">
       <div class="loading-text">{{ loadingMessage }}</div>
     </div>
@@ -37,9 +44,12 @@ import * as THREE from 'three'
 import { initHandDetector, detectHands, Hand } from '../core/hand-detector'
 import { recognizeGestures, Gesture } from '../core/gesture-recognizer'
 import { SceneManager } from '../rendering/scene-manager'
-import { GestureController } from '../interaction/gesture-controller'
+import { ManipulationController } from '../interaction/manipulation-controller'
+import { SwipeDetector } from '../core/swipe-detector'
 import { PluginManager } from '../plugins/plugin-interface'
 import { ParticlePlugin } from '../plugins/builtin/particle-plugin'
+import { useModuleStore } from '../stores/module-store'
+import ModulePanel from './ModulePanel.vue'
 
 const canvas = ref<HTMLCanvasElement | null>(null)
 const initialized = ref(false)
@@ -48,14 +58,27 @@ const fps = ref(0)
 const detectionStatus = ref('Ready')
 const detectedHands = ref(0)
 const gestures = ref<Gesture[]>([])
+const panelVisible = ref(false)
+const hoveredModuleId = ref<string | null>(null)
+const selectedModuleId = ref<string | null>(null)
 
 let sceneManager: SceneManager | null = null
-let gestureController: GestureController | null = null
+let manipulationController: ManipulationController | null = null
+let swipeDetector: SwipeDetector | null = null
 let pluginManager: PluginManager | null = null
 let videoElement: HTMLVideoElement | null = null
 let animationId: number | null = null
 let lastTime = performance.now()
 let frameCount = 0
+let hoverTimer: number | null = null
+
+// Hand persistence: keep last known hands when tracking is lost at screen edges
+let lastHands: Hand[] = []
+let lastGestures: Gesture[] = []
+let lastHandsTimestamp = 0
+const HAND_PERSIST_MS = 1000
+
+const moduleStore = useModuleStore()
 
 async function init() {
   try {
@@ -86,7 +109,8 @@ async function init() {
 
     // Initialize scene
     sceneManager = new SceneManager(canvas.value)
-    gestureController = new GestureController(sceneManager.getCamera(), sceneManager.getScene())
+    manipulationController = new ManipulationController()
+    swipeDetector = new SwipeDetector()
 
     loadingMessage.value = '步骤4/5: 加载特效插件...'
 
@@ -96,10 +120,10 @@ async function init() {
 
     // Add some demo objects
     const cube1 = sceneManager.createCube(0.2, 0x00ff9f)
-    sceneManager.addObject(cube1, new THREE.Vector3(0, 0, 0.5))
+    sceneManager.addObject(cube1, new THREE.Vector3(0, 0, -0.5))
 
     const cube2 = sceneManager.createCube(0.15, 0xff00ff)
-    sceneManager.addObject(cube2, new THREE.Vector3(0.3, 0.3, 0.5))
+    sceneManager.addObject(cube2, new THREE.Vector3(0.3, 0.3, -0.5))
 
     loadingMessage.value = '步骤5/5: 启动摄像头采集...'
     initialized.value = true
@@ -136,12 +160,25 @@ async function init() {
   }
 }
 
+function onModuleSelect(moduleId: string) {
+  const mod = moduleStore.modules.find(m => m.id === moduleId)
+  if (!mod || !sceneManager) return
+
+  const obj = mod.createObject()
+  // Place at origin (within hand's reachable z range)
+  sceneManager.addObject(obj, new THREE.Vector3(0, 0, -0.5))
+  selectedModuleId.value = moduleId
+  console.log(`📦 Module added: ${mod.name}`)
+}
+
 function animate() {
   animationId = requestAnimationFrame(animate)
 
-  if (!sceneManager || !gestureController || !videoElement || !pluginManager) return
+  if (!sceneManager || !manipulationController || !videoElement || !pluginManager || !swipeDetector) return
 
   try {
+    const now = performance.now()
+
     // 确保视频已准备好
     if (videoElement.readyState < 2) {
       // 视频还没准备好，跳过这帧
@@ -151,31 +188,118 @@ function animate() {
 
     // Detect hands
     const result = detectHands(videoElement)
-    detectedHands.value = result.hands.length
-    detectionStatus.value = result.hands.length > 0 ? 'Tracking' : 'Searching'
 
-    // Recognize gestures
-    const newGestures = recognizeGestures(result.hands)
-    gestures.value = newGestures
+    // Persist last known hands for edge recovery (1s grace period)
+    if (result.hands.length > 0) {
+      lastHands = result.hands
+      lastGestures = recognizeGestures(result.hands)
+      lastHandsTimestamp = now
+    }
+    const handsLost = result.hands.length === 0 && lastHands.length > 0
+    const inGracePeriod = now - lastHandsTimestamp < HAND_PERSIST_MS
+    const effectiveHands = result.hands.length > 0
+      ? result.hands
+      : (handsLost && inGracePeriod ? lastHands : [])
 
-    // Update scene
-    sceneManager.updateHands(result.hands)
+    detectedHands.value = effectiveHands.length
+    detectionStatus.value = effectiveHands.length > 0
+      ? (handsLost ? 'Tracking (cached)' : 'Tracking')
+      : 'Searching'
 
-    // Handle interactions
-    result.hands.forEach((hand, idx) => {
-      gestureController!.handleGesture(newGestures[idx], hand, sceneManager!.getScene())
-      gestureController!.updateObjectPosition(hand, sceneManager!.getScene())
+    // Recognize gestures (use effective hands)
+    const newGestures = recognizeGestures(effectiveHands)
+    // When using cached hands, also use cached gestures
+    const effectiveGestures = result.hands.length > 0
+      ? newGestures
+      : (handsLost && inGracePeriod ? lastGestures : [])
+    gestures.value = effectiveGestures
+
+    // Update scene (render skeleton with effective hands)
+    sceneManager.updateHands(effectiveHands)
+
+    // Natural pinch-to-manipulate
+    effectiveHands.forEach((hand, idx) => {
+      manipulationController!.update(effectiveGestures[idx], hand, sceneManager!)
     })
 
+    // Swipe detection for module panel
+    const swipeState = swipeDetector!.update(effectiveHands, now)
+    panelVisible.value = swipeState.shouldShowPanel
+
+    // Canvas z-index: raise above panel so hand skeleton is visible on top
+    if (canvas.value) {
+      if (panelVisible.value) {
+        canvas.value.style.zIndex = '501'
+        canvas.value.style.pointerEvents = 'none' // let elementFromPoint see panel below
+      } else {
+        canvas.value.style.zIndex = ''
+        canvas.value.style.pointerEvents = ''
+      }
+    }
+
+    // Panel module hover detection
+    if (panelVisible.value && effectiveHands.length > 0) {
+      // Use the first hand's index tip for hover position
+      const tip = effectiveHands[0].landmarks[8]
+      const sx = tip.x * window.innerWidth
+      const sy = tip.y * window.innerHeight
+
+      // Check if finger is over the panel area (left 260px)
+      if (sx < 260 && sx > 0 && sy > 0 && sy < window.innerHeight) {
+        const el = document.elementFromPoint(sx, sy)
+        const moduleItem = el?.closest('[data-module-id]')
+        const newHoveredId = moduleItem?.getAttribute('data-module-id') ?? null
+
+        if (newHoveredId !== hoveredModuleId.value) {
+          // Hover target changed — reset timer
+          hoveredModuleId.value = newHoveredId
+          if (hoverTimer) {
+            clearTimeout(hoverTimer)
+            hoverTimer = null
+          }
+          selectedModuleId.value = null
+        }
+
+        // Auto-select on sustained hover (500ms)
+        if (newHoveredId && newHoveredId !== selectedModuleId.value) {
+          if (!hoverTimer) {
+            hoverTimer = window.setTimeout(() => {
+              onModuleSelect(newHoveredId)
+              hoverTimer = null
+            }, 500)
+          }
+        }
+      } else {
+        // Finger outside panel area
+        if (hoveredModuleId.value !== null) {
+          hoveredModuleId.value = null
+          selectedModuleId.value = null
+          if (hoverTimer) {
+            clearTimeout(hoverTimer)
+            hoverTimer = null
+          }
+        }
+      }
+    } else {
+      // Panel not visible
+      if (hoveredModuleId.value !== null) {
+        hoveredModuleId.value = null
+        selectedModuleId.value = null
+        if (hoverTimer) {
+          clearTimeout(hoverTimer)
+          hoverTimer = null
+        }
+      }
+    }
+
     // Update plugins
-    const now = performance.now()
     const deltaTime = now - lastTime
     pluginManager.update({
       scene: sceneManager.getScene(),
       camera: sceneManager.getCamera(),
       renderer: sceneManager.getRenderer(),
-      hands: result.hands,
-      gestures: newGestures,
+      hands: effectiveHands,
+      gestures: effectiveGestures,
       deltaTime,
       timestamp: now
     })
@@ -227,6 +351,7 @@ onUnmounted(async () => {
   width: 100%;
   height: 100%;
   display: block;
+  position: relative;
 }
 
 .loading-screen {

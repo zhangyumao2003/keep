@@ -10,6 +10,33 @@ export class SceneManager {
   private objects: THREE.Object3D[] = []
   private particleSystem: THREE.Points | null = null
 
+  /**
+   * Estimate hand's distance from camera based on apparent size in the image.
+   * Larger apparent size = hand closer to camera = higher z value.
+   */
+  static estimateHandDepth(hand: Hand): number {
+    const wrist = hand.landmarks[0]
+    const midTip = hand.landmarks[12]
+    // Apparent hand size in normalized image coords (0-1 range)
+    const apparentSize = Math.sqrt(
+      (wrist.x - midTip.x) ** 2 + (wrist.y - midTip.y) ** 2
+    )
+    // Map: apparentSize ~0.15 (far) to ~0.5 (close) → z from -0.5 to 0.5
+    return (apparentSize - 0.15) / 0.35 * 1.0 - 0.5
+  }
+
+  /** Convert MediaPipe normalized landmark to Three.js world coordinates */
+  static landmarkToWorld(
+    lm: { x: number; y: number; z: number },
+    depth?: number
+  ): THREE.Vector3 {
+    return new THREE.Vector3(
+      -(lm.x - 0.5) * 2,   // x flipped: front camera mirror correction
+      -(lm.y - 0.5) * 2,
+      depth !== undefined ? depth : lm.z * 6
+    )
+  }
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas
 
@@ -63,21 +90,21 @@ export class SceneManager {
     // Create new skeletons
     hands.forEach((hand, handIdx) => {
       const group = new THREE.Group()
+      group.name = 'hand-skeleton'
       const color = hand.handedness === 'Right' ? 0x00ff9f : 0xff00ff
+      const depth = SceneManager.estimateHandDepth(hand)
 
       // Draw landmarks
       hand.landmarks.forEach((landmark, idx) => {
         const geometry = new THREE.SphereGeometry(0.01, 8, 8)
-        const material = new THREE.MeshBasicMaterial({ color })
+        const material = new THREE.MeshBasicMaterial({
+          color,
+          transparent: true,
+          opacity: 0.5,
+          depthWrite: true
+        })
         const sphere = new THREE.Mesh(geometry, material)
-
-        // Convert from normalized coordinates to scene coordinates
-        sphere.position.set(
-          (landmark.x - 0.5) * 2,
-          -(landmark.y - 0.5) * 2,
-          landmark.z * 2
-        )
-
+        sphere.position.copy(SceneManager.landmarkToWorld(landmark, depth))
         group.add(sphere)
       })
 
@@ -93,17 +120,20 @@ export class SceneManager {
 
       connections.forEach(([start, end]) => {
         const geometry = new THREE.BufferGeometry()
+        const startWorld = SceneManager.landmarkToWorld(hand.landmarks[start], depth)
+        const endWorld = SceneManager.landmarkToWorld(hand.landmarks[end], depth)
         const positions = new Float32Array([
-          hand.landmarks[start].x * 2 - 1,
-          -(hand.landmarks[start].y * 2 - 1),
-          hand.landmarks[start].z * 2,
-          hand.landmarks[end].x * 2 - 1,
-          -(hand.landmarks[end].y * 2 - 1),
-          hand.landmarks[end].z * 2
+          startWorld.x, startWorld.y, startWorld.z,
+          endWorld.x, endWorld.y, endWorld.z
         ])
         geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
 
-        const material = new THREE.LineBasicMaterial({ color })
+        const material = new THREE.LineBasicMaterial({
+          color,
+          transparent: true,
+          opacity: 0.4,
+          depthWrite: true
+        })
         const line = new THREE.Line(geometry, material)
         group.add(line)
       })
@@ -130,6 +160,42 @@ export class SceneManager {
 
   createCube(size = 0.2, color = 0x00ff9f): THREE.Mesh {
     const geometry = new THREE.BoxGeometry(size, size, size)
+    const material = new THREE.MeshStandardMaterial({
+      color,
+      metalness: 0.7,
+      roughness: 0.2,
+      emissive: color,
+      emissiveIntensity: 0.5
+    })
+    return new THREE.Mesh(geometry, material)
+  }
+
+  createSphere(radius = 0.1, color = 0x00aaff): THREE.Mesh {
+    const geometry = new THREE.SphereGeometry(radius, 32, 32)
+    const material = new THREE.MeshStandardMaterial({
+      color,
+      metalness: 0.7,
+      roughness: 0.2,
+      emissive: color,
+      emissiveIntensity: 0.5
+    })
+    return new THREE.Mesh(geometry, material)
+  }
+
+  createTorus(radius = 0.1, tube = 0.03, color = 0xff00ff): THREE.Mesh {
+    const geometry = new THREE.TorusGeometry(radius, tube, 16, 32)
+    const material = new THREE.MeshStandardMaterial({
+      color,
+      metalness: 0.7,
+      roughness: 0.2,
+      emissive: color,
+      emissiveIntensity: 0.5
+    })
+    return new THREE.Mesh(geometry, material)
+  }
+
+  createCylinder(radiusTop = 0.08, radiusBottom = 0.08, height = 0.2, color = 0xffaa00): THREE.Mesh {
+    const geometry = new THREE.CylinderGeometry(radiusTop, radiusBottom, height, 32)
     const material = new THREE.MeshStandardMaterial({
       color,
       metalness: 0.7,
